@@ -12,16 +12,17 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, 
   Tooltip as RechartsTooltip, ResponsiveContainer, Cell 
 } from 'recharts';
+import { supabase } from '../lib/supabase';
 
-// Type definitions
 interface User {
   id: string;
-  name?: string;
-  role: 'teacher' | 'student';
-  email?: string;
-  password: string;
-  department?: string;
   studentId?: string;
+  name: string;
+  role: 'teacher' | 'student';
+  department: string;
+  password: string;
+  email?: string;
+  createdAt?: string;
 }
 
 interface Exam {
@@ -52,17 +53,58 @@ interface Result {
 
 export default function UnionVisionPortal() {
   // --- STATE MANAGEMENT ---
-  const [users, setUsers] = useState<User[]>([
-    { id: 'teacher-1', name: 'Admin Teacher', role: 'teacher', email: 'teacher@union.edu', password: 'password123', department: 'All' },
-    { id: 'UNV-1001', name: 'Demo Student', role: 'student', studentId: 'UNV-1001', password: 'password123', department: 'Management' }
-  ]);
+  const [users, setUsers] = useState<User[]>([]);
   const [exams, setExams] = useState<Exam[]>([]);
   const [results, setResults] = useState<Result[]>([]);
-  
+
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [currentView, setCurrentView] = useState('auth'); // auth, teacher_dash, student_dash, create_exam, take_exam
   const [activeExam, setActiveExam] = useState<Exam | null>(null);
   const [modal, setModal] = useState({ isOpen: false, title: '', message: '', type: 'info' as 'info' | 'success' | 'error', onClose: null as (() => void) | null });
+
+  // Loading and error states
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Load data from Supabase on component mount
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+
+      console.log('Loading data from Supabase...');
+
+      // Load all data in parallel
+      const [usersResponse, examsResponse, resultsResponse] = await Promise.all([
+        supabase.from('users').select('*'),
+        supabase.from('exams').select('*'),
+        supabase.from('results').select('*')
+      ]);
+
+      console.log('Users response:', usersResponse);
+      console.log('Exams response:', examsResponse);
+      console.log('Results response:', resultsResponse);
+
+      if (usersResponse.error) throw usersResponse.error;
+      if (examsResponse.error) throw examsResponse.error;
+      if (resultsResponse.error) throw resultsResponse.error;
+
+      setUsers(usersResponse.data || []);
+      setExams(examsResponse.data || []);
+      setResults(resultsResponse.data || []);
+      
+      console.log('Data loaded successfully');
+    } catch (err) {
+      console.error('Error loading data:', err);
+      setError('Failed to load data from database. Please check your connection.');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // --- HELPER FUNCTIONS ---
   const showModal = (title: string, message: string, type: 'info' | 'success' | 'error' = 'info', onClose: (() => void) | null = null) => {
@@ -75,16 +117,60 @@ export default function UnionVisionPortal() {
   };
 
   // --- DELETE & EXPORT FUNCTIONS ---
-  const deleteStudent = (studentId: string) => {
-    setUsers(users.filter(u => u.id !== studentId));
-    setResults(results.filter(r => r.studentId !== studentId));
-    showModal('Student Deleted', 'The student and their records have been removed.', 'success');
+  const deleteStudent = async (studentId: string) => {
+    try {
+      // Delete from results first (foreign key constraint)
+      const { error: resultsError } = await supabase
+        .from('results')
+        .delete()
+        .eq('student_id', studentId);
+
+      if (resultsError) throw resultsError;
+
+      // Delete the user
+      const { error: userError } = await supabase
+        .from('users')
+        .delete()
+        .eq('id', studentId);
+
+      if (userError) throw userError;
+
+      // Update local state
+      setUsers(users.filter(u => u.id !== studentId));
+      setResults(results.filter(r => r.studentId !== studentId));
+      showModal('Student Deleted', 'The student and their records have been removed.', 'success');
+    } catch (err) {
+      console.error('Error deleting student:', err);
+      showModal('Error', 'Failed to delete student. Please try again.', 'error');
+    }
   };
 
-  const deleteExam = (examId: string) => {
-    setExams(exams.filter(e => e.id !== examId));
-    setResults(results.filter(r => r.examId !== examId));
-    showModal('Exam Deleted', 'The exam and all related results have been removed.', 'success');
+  const deleteExam = async (examId: string) => {
+    try {
+      // Delete from results first (foreign key constraint)
+      const { error: resultsError } = await supabase
+        .from('results')
+        .delete()
+        .eq('exam_id', examId);
+
+      if (resultsError) throw resultsError;
+
+      // Delete the exam
+      const { error: examError } = await supabase
+        .from('exams')
+        .delete()
+        .eq('id', examId);
+
+      if (examError) throw examError;
+
+      // Update local state
+      setExams(exams.filter(e => e.id !== examId));
+      setResults(results.filter(r => r.examId !== examId));
+      showModal('Exam Deleted', 'The exam and all related results have been removed.', 'success');
+    } catch (err) {
+      console.error('Error deleting exam:', err);
+      showModal('Error', 'Failed to delete exam. Please try again.', 'error');
+    }
   };
 
   const exportResultsCSV = () => {
@@ -145,7 +231,7 @@ export default function UnionVisionPortal() {
       }
     };
 
-    const handleRegister = (e: React.FormEvent<HTMLFormElement>) => {
+    const handleRegister = async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
       const newStudentId = `UNV-${1000 + users.length}`;
       const newUser: User = {
@@ -156,11 +242,23 @@ export default function UnionVisionPortal() {
         department: regDept,
         password: regPassword
       };
-      setUsers([...users, newUser]);
-      showModal('Registration Successful', `Your Student ID is: ${newStudentId}. Please use this to log in.`, 'success', () => {
-        setIsLogin(true);
-        setLoginId(newStudentId);
-      });
+
+      try {
+        const { error } = await supabase
+          .from('users')
+          .insert([newUser]);
+
+        if (error) throw error;
+
+        setUsers([...users, newUser]);
+        showModal('Registration Successful', `Your Student ID is: ${newStudentId}. Please use this to log in.`, 'success', () => {
+          setIsLogin(true);
+          setLoginId(newStudentId);
+        });
+      } catch (err) {
+        console.error('Error registering user:', err);
+        showModal('Registration Failed', 'Failed to create account. Please try again.', 'error');
+      }
     };
 
     return (
@@ -312,9 +410,9 @@ export default function UnionVisionPortal() {
                 <h2 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
                   <BarChart3 className="text-cyan-400"/> Average Score per Exam
                 </h2>
-                <div className="h-[300px] w-full">
+                <div className="h-[300px] w-full min-h-[300px] min-w-[400px]">
                   {myExams.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={400} minHeight={300}>
                       <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#ffffff10" vertical={false} />
                         <XAxis dataKey="name" stroke="#ffffff50" axisLine={false} tickLine={false} tick={{fontSize: 12}} dy={10} />
@@ -621,7 +719,7 @@ export default function UnionVisionPortal() {
           return;
         }
 
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
         
         const response = await fetch(apiUrl, {
           method: 'POST',
@@ -659,13 +757,14 @@ export default function UnionVisionPortal() {
       }
     };
 
-    const saveExam = () => {
+    const saveExam = async () => {
       if (!currentUser) return;
       if (!title || questions.length === 0) {
         showModal('Error', 'Please add a title and at least one question.', 'error');
         return;
       }
-      const newExam = {
+
+      const newExam: Exam = {
         id: 'exam-' + Date.now(),
         teacherId: currentUser.id,
         title,
@@ -675,8 +774,20 @@ export default function UnionVisionPortal() {
         questions,
         createdAt: new Date().toISOString()
       };
-      setExams([...exams, newExam]);
-      showModal('Success', 'Exam created and published successfully!', 'success', () => setCurrentView('teacher_dash'));
+
+      try {
+        const { error } = await supabase
+          .from('exams')
+          .insert([newExam]);
+
+        if (error) throw error;
+
+        setExams([...exams, newExam]);
+        showModal('Success', 'Exam created and published successfully!', 'success', () => setCurrentView('teacher_dash'));
+      } catch (err) {
+        console.error('Error saving exam:', err);
+        showModal('Error', 'Failed to save exam. Please try again.', 'error');
+      }
     };
 
     return (
@@ -843,17 +954,38 @@ export default function UnionVisionPortal() {
       return () => clearInterval(timer);
     }, [timeLeft]);
 
-    const submitExam = () => {
-      if (!currentUser) return;
+    const submitExam = async () => {
+      if (!currentUser || !activeExam) return;
+
       let score = 0;
       activeExam.questions.forEach((q, idx) => { if (answers[idx] === q.correct) score++; });
-      const newResult = { id: 'r-' + Date.now(), studentId: currentUser.id, examId: activeExam.id, score, totalQuestions: activeExam.questions.length, date: new Date().toISOString() };
-      setResults([...results, newResult]);
-      const percentage = Math.round((score / activeExam.questions.length) * 100);
-      showModal('Exam Completed', `Your Score: ${score}/${activeExam.questions.length} (${percentage}%)`, percentage >= 50 ? 'success' : 'error', () => {
-        setActiveExam(null);
-        setCurrentView('student_dash');
-      });
+
+      const newResult: Result = {
+        id: 'r-' + Date.now(),
+        studentId: currentUser.id,
+        examId: activeExam.id,
+        score,
+        totalQuestions: activeExam.questions.length,
+        date: new Date().toISOString()
+      };
+
+      try {
+        const { error } = await supabase
+          .from('results')
+          .insert([newResult]);
+
+        if (error) throw error;
+
+        setResults([...results, newResult]);
+        const percentage = Math.round((score / activeExam.questions.length) * 100);
+        showModal('Exam Completed', `Your Score: ${score}/${activeExam.questions.length} (${percentage}%)`, percentage >= 50 ? 'success' : 'error', () => {
+          setActiveExam(null);
+          setCurrentView('student_dash');
+        });
+      } catch (err) {
+        console.error('Error submitting exam:', err);
+        showModal('Error', 'Failed to submit exam. Please try again.', 'error');
+      }
     };
 
     const formatTime = (seconds: number) => {
@@ -955,9 +1087,40 @@ export default function UnionVisionPortal() {
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
       `}} />
-      
-      {currentView !== 'auth' && currentView !== 'take_exam' && (
-        <nav className="fixed top-0 w-full bg-black/50 backdrop-blur-xl border-b border-white/10 z-40 px-6 py-4 flex justify-between items-center">
+
+      {/* Loading State */}
+      {loading && (
+        <div className="min-h-screen bg-[#050505] flex items-center justify-center">
+          <div className="text-center">
+            <div className="w-16 h-16 border-4 border-cyan-500/30 border-t-cyan-500 rounded-full animate-spin mx-auto mb-4"></div>
+            <h2 className="text-xl font-bold text-white mb-2">Loading Union Vision Portal</h2>
+            <p className="text-cyan-400/70">Connecting to database...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Error State */}
+      {error && !loading && (
+        <div className="min-h-screen bg-[#050505] flex items-center justify-center p-4">
+          <div className="text-center max-w-md">
+            <AlertCircle size={64} className="text-red-500 mx-auto mb-4" />
+            <h2 className="text-xl font-bold text-white mb-2">Connection Error</h2>
+            <p className="text-red-400/70 mb-4">{error}</p>
+            <button
+              onClick={loadData}
+              className="px-6 py-3 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg font-bold transition-colors"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content - Only show when loaded and no error */}
+      {!loading && !error && (
+        <>
+          {currentView !== 'auth' && currentView !== 'take_exam' && (
+            <nav className="fixed top-0 w-full bg-black/50 backdrop-blur-xl border-b border-white/10 z-40 px-6 py-4 flex justify-between items-center">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center shadow-lg">
               <GraduationCap size={20} color="white" />
@@ -986,7 +1149,9 @@ export default function UnionVisionPortal() {
       {currentView === 'student_dash' && <StudentDashboard />}
       {currentView === 'create_exam' && <CreateExamView />}
       {currentView === 'take_exam' && <TakeExamView />}
-      
+        </>
+      )}
+
       <Modal />
     </div>
   );
